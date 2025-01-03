@@ -1,4 +1,6 @@
-streamlit
-mysql-connector-python
-akshare
+plotly
 pandas
+numpy
+akshare
+mysql-connector-python
+streamlit
