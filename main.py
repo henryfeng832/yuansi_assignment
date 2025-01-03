@@ -199,6 +199,97 @@ def plot_cumulative_returns(df, metrics, stock_code):
     )
     return fig
 
+# 计算投资组合数据
+@st.cache_data
+def calculate_portfolio_metrics(stock_codes, equal_weight=True):
+    # 收集所有股票的收盘价数据
+    portfolio_data = {}
+    common_dates = None
+    
+    # 加载所有股票数据并获取共同的交易日期
+    for code in stock_codes:
+        df = load_stock_data(code)
+        if df is not None:
+            df = df.set_index('日期')[['收盘价']]
+            df = df.rename(columns={'收盘价': code})
+            if common_dates is None:
+                common_dates = set(df.index)
+            else:
+                common_dates = common_dates.intersection(set(df.index))
+            portfolio_data[code] = df
+    
+    if not portfolio_data:
+        return None
+    
+    # 创建投资组合数据框
+    portfolio_df = pd.DataFrame(index=sorted(common_dates))
+    for code in stock_codes:
+        portfolio_df[code] = portfolio_data[code].loc[portfolio_df.index]
+    
+    # 计算每只股票的权重（等权重）
+    weights = np.array([1/len(stock_codes)] * len(stock_codes))
+    
+    # 计算每只股票的日收益率
+    stock_returns = portfolio_df.pct_change()
+    
+    # 计算投资组合的日收益率
+    portfolio_returns = (stock_returns * weights).sum(axis=1)
+    
+    # 计算投资组合的累计收益率
+    portfolio_cumulative_returns = (1 + portfolio_returns).cumprod() - 1
+    
+    # 计算投资组合的月收益率
+    portfolio_df['portfolio_value'] = (1 + portfolio_returns).cumprod()
+    monthly_returns = portfolio_df.resample('M')['portfolio_value'].last().pct_change()
+    
+    # 计算最大回撤
+    rolling_max = portfolio_df['portfolio_value'].expanding().max()
+    drawdowns = portfolio_df['portfolio_value'] / rolling_max - 1
+    max_drawdown = drawdowns.min()
+    
+    # 计算夏普比率
+    risk_free_rate = 0.03
+    annual_return = portfolio_returns.mean() * 252
+    annual_volatility = portfolio_returns.std() * np.sqrt(252)
+    sharpe_ratio = (annual_return - risk_free_rate) / annual_volatility
+    
+    # 计算今年以来收益率
+    current_year = datetime.now().year - 1
+    ytd_data = portfolio_df[portfolio_df.index.year == current_year]
+    ytd_return = (ytd_data['portfolio_value'].iloc[-1] / ytd_data['portfolio_value'].iloc[0] - 1) if not ytd_data.empty else 0
+    
+    return {
+        'portfolio_df': portfolio_df,
+        'daily_returns': portfolio_returns,
+        'avg_daily_return': portfolio_returns.mean(),
+        'monthly_returns': monthly_returns,
+        'avg_monthly_return': monthly_returns.mean(),
+        'cumulative_returns': portfolio_cumulative_returns,
+        'max_drawdown': max_drawdown,
+        'sharpe_ratio': sharpe_ratio,
+        'ytd_return': ytd_return
+    }
+
+# 绘制投资组合走势图
+def plot_portfolio_performance(portfolio_metrics):
+    fig = go.Figure()
+    
+    # 添加投资组合累计收益率曲线
+    fig.add_trace(go.Scatter(
+        x=portfolio_metrics['cumulative_returns'].index,
+        y=portfolio_metrics['cumulative_returns'],
+        mode='lines',
+        name='投资组合累计收益率'
+    ))
+    
+    fig.update_layout(
+        title='投资组合历史表现',
+        yaxis_title='累计收益率',
+        xaxis_title='日期',
+        showlegend=True
+    )
+    return fig
+
 def main():
     # 检查会话状态
     if 'session_id' not in st.session_state:
@@ -238,105 +329,177 @@ def main():
             st.session_state['session_id'] = None
             st.rerun()
         
-        # 股票代码列表
-        stock_codes = [
-            "600519",  # 贵州茅台
-            "601318",  # 中国平安
-            "600036",  # 招商银行
-            "600276",  # 恒瑞医药
-            "601398"   # 工商银行
-        ]
+        # 添加标签页来分离单只股票分析和投资组合分析
+        tab_single, tab_portfolio = st.tabs(["单只股票分析", "投资组合分析"])
         
-        # 选择股票
-        selected_stock = st.selectbox(
-            "选择要分析的股票",
-            stock_codes,
-            format_func=lambda x: f"{x} - {get_stock_name(x)}"
-        )
-        
-        # 加载股票数据
-        df = load_stock_data(selected_stock)
-        
-        if df is not None:
-            # 计算指标
-            metrics = calculate_metrics(df)
+        with tab_single:
+            # 股票代码列表
+            stock_codes = [
+                "600519",  # 贵州茅台
+                "601318",  # 中国平安
+                "600036",  # 招商银行
+                "600276",  # 恒瑞医药
+                "601398"   # 工商银行
+            ]
             
-            # 显示主要指标
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric(f"今年以来收益率({datetime.now().year - 1})", f"{metrics['ytd_return']:.2%}")
-                st.metric("日均收益率", f"{metrics['avg_daily_return']:.2%}")
-            with col2:
-                st.metric("最大回撤", f"{metrics['max_drawdown']:.2%}")
-                st.metric("月均收益率", f"{metrics['avg_monthly_return']:.2%}")
-            with col3:
-                st.metric("夏普比率", f"{metrics['sharpe_ratio']:.2f}")
+            # 选择股票
+            selected_stock = st.selectbox(
+                "选择要分析的股票",
+                stock_codes,
+                format_func=lambda x: f"{x} - {get_stock_name(x)}"
+            )
             
-            # 添加收益率统计图表
-            st.subheader("收益率统计")
-            tab1, tab2 = st.tabs(["日收益率分布", "月收益率趋势"])
+            # 加载股票数据
+            df = load_stock_data(selected_stock)
             
-            with tab1:
-                # 绘制日收益率分布直方图
-                fig_daily = go.Figure()
-                fig_daily.add_trace(go.Histogram(
-                    x=metrics['daily_returns'],
-                    nbinsx=50,
-                    name="日收益率分布"
-                ))
-                fig_daily.update_layout(
-                    title="日收益率分布图",
-                    xaxis_title="收益率",
-                    yaxis_title="频次"
-                )
-                st.plotly_chart(fig_daily)
+            if df is not None:
+                # 计算指标
+                metrics = calculate_metrics(df)
                 
-            with tab2:
-                # 绘制月收益率趋势图
-                fig_monthly = go.Figure()
-                fig_monthly.add_trace(go.Bar(
-                    x=metrics['monthly_returns'].index.astype(str),
-                    y=metrics['monthly_returns'].values,
-                    name="月收益率"
-                ))
-                fig_monthly.update_layout(
-                    title="月收益率趋势图",
-                    xaxis_title="月份",
-                    yaxis_title="收益率",
-                    xaxis_tickangle=-45
+                # 显示主要指标
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric(f"今年以来收益率({datetime.now().year - 1})", f"{metrics['ytd_return']:.2%}")
+                    st.metric("日均收益率", f"{metrics['avg_daily_return']:.2%}")
+                with col2:
+                    st.metric("最大回撤", f"{metrics['max_drawdown']:.2%}")
+                    st.metric("月均收益率", f"{metrics['avg_monthly_return']:.2%}")
+                with col3:
+                    st.metric("夏普比率", f"{metrics['sharpe_ratio']:.2f}")
+                
+                # 显示累计收益率图
+                st.plotly_chart(plot_cumulative_returns(df, metrics, selected_stock))
+
+                # 添加收益率统计图表
+                # st.subheader("收益率统计")
+                tab1, tab2 = st.tabs(["日收益率分布", "月收益率趋势"])
+                
+                with tab1:
+                    # 绘制日收益率分布直方图
+                    fig_daily = go.Figure()
+                    fig_daily.add_trace(go.Histogram(
+                        x=metrics['daily_returns'],
+                        nbinsx=50,
+                        name="日收益率分布"
+                    ))
+                    fig_daily.update_layout(
+                        title="日收益率分布图",
+                        xaxis_title="收益率",
+                        yaxis_title="频次"
+                    )
+                    st.plotly_chart(fig_daily)
+                    
+                with tab2:
+                    # 绘制月收益率趋势图
+                    fig_monthly = go.Figure()
+                    fig_monthly.add_trace(go.Bar(
+                        x=metrics['monthly_returns'].index.astype(str),
+                        y=metrics['monthly_returns'].values,
+                        name="月收益率"
+                    ))
+                    fig_monthly.update_layout(
+                        title="月收益率趋势图",
+                        xaxis_title="月份",
+                        yaxis_title="收益率",
+                        xaxis_tickangle=-45
+                    )
+                    st.plotly_chart(fig_monthly)
+                
+                # 显示K线图
+                st.plotly_chart(plot_stock_price(df, selected_stock))
+                
+                # 显示月度收益率热力图
+                df['月度收益率'] = df.groupby(df['日期'].dt.to_period('M'))['收盘价'].transform(
+                    lambda x: (x.iloc[-1] / x.iloc[0] - 1)
                 )
-                st.plotly_chart(fig_monthly)
+                monthly_returns_pivot = df.pivot_table(
+                    values='月度收益率',
+                    index=df['日期'].dt.year,
+                    columns=df['日期'].dt.month,
+                    aggfunc='first'
+                )
+                
+                fig = px.imshow(
+                    monthly_returns_pivot,
+                    labels=dict(x="月份", y="年份", color="收益率"),
+                    x=[f"{i}月" for i in range(1, 13)],
+                    y=monthly_returns_pivot.index,
+                    aspect="auto",
+                    color_continuous_scale="RdYlGn"
+                )
+                fig.update_layout(title="月度收益率热力图")
+                st.plotly_chart(fig)
+            else:
+                st.error("无法加载股票数据，请确保数据文件存在")
             
-            # 显示K线图
-            st.plotly_chart(plot_stock_price(df, selected_stock))
+        with tab_portfolio:
+            st.subheader("投资组合分析（等权重配置）")
             
-            # 显示累计收益率图
-            st.plotly_chart(plot_cumulative_returns(df, metrics, selected_stock))
+            # 股票代码列表（确保在这个作用域内也定义了stock_codes）
+            stock_codes = [
+                "600519",  # 贵州茅台
+                "601318",  # 中国平安
+                "600036",  # 招商银行
+                "600276",  # 恒瑞医药
+                "601398"   # 工商银行
+            ]
             
-            # 显示月度收益率热力图
-            df['月度收益率'] = df.groupby(df['日期'].dt.to_period('M'))['收盘价'].transform(
-                lambda x: (x.iloc[-1] / x.iloc[0] - 1)
-            )
-            monthly_returns_pivot = df.pivot_table(
-                values='月度收益率',
-                index=df['日期'].dt.year,
-                columns=df['日期'].dt.month,
-                aggfunc='first'
-            )
+            # 计算投资组合指标
+            portfolio_metrics = calculate_portfolio_metrics(stock_codes)
             
-            fig = px.imshow(
-                monthly_returns_pivot,
-                labels=dict(x="月份", y="年份", color="收益率"),
-                x=[f"{i}月" for i in range(1, 13)],
-                y=monthly_returns_pivot.index,
-                aspect="auto",
-                color_continuous_scale="RdYlGn"
-            )
-            fig.update_layout(title="月度收益率热力图")
-            st.plotly_chart(fig)
-        
-        else:
-            st.error("无法加载股票数据，请确保数据文件存在")
+            if portfolio_metrics is not None:
+                # 显示投资组合主要指标
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric(f"今年以来收益率({datetime.now().year - 1})", 
+                             f"{portfolio_metrics['ytd_return']:.2%}")
+                    st.metric("日均收益率", 
+                             f"{portfolio_metrics['avg_daily_return']:.2%}")
+                with col2:
+                    st.metric("最大回撤", 
+                             f"{portfolio_metrics['max_drawdown']:.2%}")
+                    st.metric("月均收益率", 
+                             f"{portfolio_metrics['avg_monthly_return']:.2%}")
+                with col3:
+                    st.metric("夏普比率", 
+                             f"{portfolio_metrics['sharpe_ratio']:.2f}")
+                
+                # 显示投资组合走势图
+                st.plotly_chart(plot_portfolio_performance(portfolio_metrics))
+                
+                # 显示投资组合收益率分布
+                tab1, tab2 = st.tabs(["日收益率分布", "月收益率趋势"])
+                
+                with tab1:
+                    fig_daily = go.Figure()
+                    fig_daily.add_trace(go.Histogram(
+                        x=portfolio_metrics['daily_returns'],
+                        nbinsx=50,
+                        name="投资组合日收益率分布"
+                    ))
+                    fig_daily.update_layout(
+                        title="投资组合日收益率分布图",
+                        xaxis_title="收益率",
+                        yaxis_title="频次"
+                    )
+                    st.plotly_chart(fig_daily)
+                
+                with tab2:
+                    fig_monthly = go.Figure()
+                    fig_monthly.add_trace(go.Bar(
+                        x=portfolio_metrics['monthly_returns'].index,
+                        y=portfolio_metrics['monthly_returns'].values,
+                        name="投资组合月收益率"
+                    ))
+                    fig_monthly.update_layout(
+                        title="投资组合月收益率趋势图",
+                        xaxis_title="月份",
+                        yaxis_title="收益率",
+                        xaxis_tickangle=-45
+                    )
+                    st.plotly_chart(fig_monthly)
+            else:
+                st.error("无法加载投资组合数据，请确保所有股票数据文件存在")
 
 def get_stock_name(code):
     stock_names = {
