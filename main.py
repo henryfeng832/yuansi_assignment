@@ -125,6 +125,16 @@ def calculate_metrics(df):
     # 计算日收益率
     daily_returns = df['收盘价'].pct_change()
     
+    # 计算日均收益率
+    avg_daily_return = daily_returns.mean()
+    
+    # 计算月均收益率（按自然月）
+    df['月份'] = df['日期'].dt.to_period('M')
+    monthly_returns = df.groupby('月份')['收盘价'].apply(
+        lambda x: (x.iloc[-1] / x.iloc[0] - 1)
+    )
+    avg_monthly_return = monthly_returns.mean()
+    
     # 计算累计收益率
     cumulative_returns = (1 + daily_returns).cumprod() - 1
     
@@ -139,12 +149,6 @@ def calculate_metrics(df):
     annual_volatility = daily_returns.std() * np.sqrt(252)
     sharpe_ratio = (annual_return - risk_free_rate) / annual_volatility
     
-    # 计算月均收益率
-    df['月份'] = df['日期'].dt.to_period('M')
-    monthly_returns = df.groupby('月份')['收盘价'].apply(
-        lambda x: (x.iloc[-1] / x.iloc[0] - 1)
-    ).mean()
-    
     # 计算今年以来收益率
     current_year = datetime.now().year - 1
     ytd_data = df[df['日期'].dt.year == current_year]
@@ -152,10 +156,12 @@ def calculate_metrics(df):
     
     return {
         'daily_returns': daily_returns,
+        'avg_daily_return': avg_daily_return,
+        'monthly_returns': monthly_returns,
+        'avg_monthly_return': avg_monthly_return,
         'cumulative_returns': cumulative_returns,
         'max_drawdown': max_drawdown,
         'sharpe_ratio': sharpe_ratio,
-        'monthly_return': monthly_returns,
         'ytd_return': ytd_return
     }
 
@@ -259,10 +265,47 @@ def main():
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric(f"今年以来收益率({datetime.now().year - 1})", f"{metrics['ytd_return']:.2%}")
+                st.metric("日均收益率", f"{metrics['avg_daily_return']:.2%}")
             with col2:
                 st.metric("最大回撤", f"{metrics['max_drawdown']:.2%}")
+                st.metric("月均收益率", f"{metrics['avg_monthly_return']:.2%}")
             with col3:
                 st.metric("夏普比率", f"{metrics['sharpe_ratio']:.2f}")
+            
+            # 添加收益率统计图表
+            st.subheader("收益率统计")
+            tab1, tab2 = st.tabs(["日收益率分布", "月收益率趋势"])
+            
+            with tab1:
+                # 绘制日收益率分布直方图
+                fig_daily = go.Figure()
+                fig_daily.add_trace(go.Histogram(
+                    x=metrics['daily_returns'],
+                    nbinsx=50,
+                    name="日收益率分布"
+                ))
+                fig_daily.update_layout(
+                    title="日收益率分布图",
+                    xaxis_title="收益率",
+                    yaxis_title="频次"
+                )
+                st.plotly_chart(fig_daily)
+                
+            with tab2:
+                # 绘制月收益率趋势图
+                fig_monthly = go.Figure()
+                fig_monthly.add_trace(go.Bar(
+                    x=metrics['monthly_returns'].index.astype(str),
+                    y=metrics['monthly_returns'].values,
+                    name="月收益率"
+                ))
+                fig_monthly.update_layout(
+                    title="月收益率趋势图",
+                    xaxis_title="月份",
+                    yaxis_title="收益率",
+                    xaxis_tickangle=-45
+                )
+                st.plotly_chart(fig_monthly)
             
             # 显示K线图
             st.plotly_chart(plot_stock_price(df, selected_stock))
